@@ -1,0 +1,246 @@
+"""
+Main program of the software, run a server on a given host and port
+use sqlite3 to manage SQL interactions with database (connection, registration)
+ """
+# required modules
+import socket  # creating the socket instance and run the server
+import select  # for server interaction operation management
+from threading import Thread  # accelerating the process
+import sys  # to manage outputs of the program
+import Crypto.Cipher  # to encrypt data and decrypt it while sending and receiving data
+import sqlite3  # for sql database interactions
+import time  # for analyzing time token by sql queries processes
+import struct  # send data encryption correctly
+
+# colors for different kinds of data
+BLUE = '\033[94m'
+GREEN = '\033[92m'
+RED = '\033[1;31m'
+
+# variables harvesting using sys.argv
+if len(sys.argv) < 3:
+    print(RED + '[usage] python server.py <hostname> <port>')
+    sys.exit()
+
+_HOST = sys.argv[1]
+_PORT = int(sys.argv[2])
+
+# main variables
+_BUFFER = 4096
+_RUN = True
+_MAX = 10
+_USERS = []
+
+# time variable info
+_START = time.strftime("%A %d %B %Y %H:%M:%S")
+
+# product signature
+print(" _______  ______   ______    _______  __    _  _______  ___      ___   __    _  _______ \n"
+      "|   _   ||      | |    _ |  |       ||  |  | ||   _   ||   |    |   | |  |  | ||       |\n"
+      "|  |_|  ||  _    ||   | ||  |    ___||   |_| ||  |_|  ||   |    |   | |   |_| ||____   |\n"
+      "|       || | |   ||   |_||_ |   |___ |       ||       ||   |    |   | |       | ____|  |\n"
+      "|       || |_|   ||    __  ||    ___||  _    ||       ||   |___ |   | |  _    || ______|\n"
+      "|   _   ||       ||   |  | ||   |___ | | |   ||   _   ||       ||   | | | |   || |_____ \n"
+      "|__| |__||______| |___|  |_||_______||_|  |__||__| |__||_______||___| |_|  |__||_______|\n"
+      "created by Gh0sT / ADZ team / contact me at ghost.adz@gmail.com / v1.0\n")
+
+
+class Sql:
+    def __init__(self):
+        self.conn = sqlite3.connect('ADZ-db')
+        self.cursor = self.conn.cursor()
+
+    def inscription(self, username, password, requester):
+        """
+        this method dumps into the ADZ database username and password of the user (requester)
+         :param username:
+         :param password:
+         :param requester:
+        """
+        try:
+            self.cursor.execute('CREATE TABLE IF NOT EXISTS users(username TEXT NOT NULL UNIQUE,'
+                                ' password TEXT NOT NULL)')
+            self.conn.commit()
+            try:
+                self.cursor.execute('INSERT INTO users(username, password) VALUES (?, ?)', (username, password))
+                self.conn.commit()
+                #  self.cursor.close()
+                #  self.conn.close()
+                print(GREEN + 'user[' + str(requester) + '] created a new account\n')
+                return 'executed'
+            except sqlite3.IntegrityError:
+                print(RED + 'user[' + str(requester) + '] tried to create an account but username already exist...\n')
+                return 'error-2'
+        except sqlite3.Error as e:
+            print(RED + 'An error occurred during creating a new account for the user: [' + str(requester) + ']\n')
+            print(e)
+            return 'error-1'
+
+    def connection(self, username, password, requester):
+        """
+        check if the data of the users are already registered in the database and allows or not the access
+        :param username:
+        :param password:
+        :param requester:
+        """
+        try:
+            self.cursor.execute('SELECT * FROM users WHERE username=? AND password=?', (username, password))
+            data = self.cursor.fetchall()[0]
+            if username == data[0] and password == data[1]:
+                print(GREEN + 'user[' + username + '] entered the chat-room\n')
+                return 'executed'
+            else:
+                print(RED + 'user[' + str(requester) + '] failed the login...\n')
+                return 'error-2'
+        except sqlite3.Error:
+            print(RED + 'An error occurred during the login process for the user: [' + str(requester) + ']\n')
+            return 'error-1'
+
+Query = Sql()
+
+
+class AES:
+    def __init__(self):
+        self.key = pass
+
+
+class Server(Thread):
+
+    def __init__(self):
+        Thread.__init__(self)
+        self.host = _HOST
+        self.port = _PORT
+        self.buff = _BUFFER
+        self.users = _USERS
+        self.run = _RUN
+        self.conn = _MAX
+        self.start = _START
+        self.keys = {}
+
+    def _bind(self):
+        """
+        create, set up and bind the server to listen any incoming connection
+        """
+        self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.server_socket.setblocking(False)
+        self.server_socket.bind((self.host, self.port))
+        self.server_socket.listen(self.conn)
+        self.users.append(self.server_socket)
+        print(BLUE + '---------- ADZ - chat server - gh0sT ----------\n')
+        print(GREEN + '[statement] SERVER STARTED: {0}'.format(self.start))
+
+    def _stop(self):
+        """
+        kill the server
+        """
+        self.run = False
+        self.server_socket.close()
+
+    def _send_data(self, sock, data):
+        """
+        encode and send data to all connected users except the server and the sender
+        """
+        for sockp in self.users:
+            if sockp != self.server_socket and sockp != sock:
+                try:
+                    sockp.send(data.encode())
+                except socket.error:
+                    sockp.close()
+                    self.users.remove(sock)
+
+    def _send_one(self, sock, data):
+        """
+        encode and send data to only one user (used for sqlite query communications
+        """
+        for sockp in self.users:
+            if sockp == sock:
+                try:
+                    data = data.encode()
+                    sockp.send(data)
+                except socket.error:
+                    sockp.close()
+                    self.users.remove(sock)
+
+    def _run(self):
+        """
+        run the server in a while loop
+        """
+        while self.run:
+            try:
+                ready_to_read, ready_to_write, in_error = select.select(self.users, [], [], 60)
+            except socket.error:
+                continue
+            else:
+                for sock in ready_to_read:
+                    if sock == self.server_socket:
+                        try:
+                            # new client connection
+                            client_socket, client_address = self.server_socket.accept()
+                        except socket.error:
+                            break
+                        else:
+                            self.users.append(client_socket)
+
+                    else:
+                        try:
+                            data = sock.recv(self.buff).decode()
+                            if data:
+                                spliter = data.split()
+
+                                if spliter[0] == '/i':  # register.py target
+                                    user = spliter[1]  # data harvesting
+                                    password = spliter[2]  # data harvesting
+                                    register = Query.inscription(user, password, sock.getpeername())
+                                    # verify the statement returned
+                                    if register == 'executed':  # statement verified
+                                        self._send_one(sock, '/a your account has been created successfully!\n')
+                                    elif register == 'error-1':
+                                        self._send_one(sock, 'denied-1 \n')
+                                    elif register == 'error-2':
+                                        self._send_one(sock, 'denied')
+
+                                if spliter[0] == '/c':  # client.py target
+                                    user = spliter[1]  # data harvesting
+                                    password = spliter[2]  # data harvesting
+                                    connection = Query.connection(user, password, sock.getpeername())
+                                    if connection == 'executed':  # statement verified
+                                        self.keys[client_address] = user  # dictionary for lines 200 - 206
+                                        self._send_one(sock, '/e')
+                                        print(GREEN + '[{0}] entered the chat-room\n'.format(user))
+                                        self._send_data(sock, '[{0}] entered the chat-room\n'.format(user))
+                                    else:
+                                        self._send_one(sock, 'denied\n')
+
+                                if spliter[0] == '/q':  # right way to disconnect from the server
+                                    user = spliter[1]  # data harvesting
+                                    print(BLUE + 'user[' + sock + '] is offline (' + user + ')\n')
+                                    self._send_data(sock, 'user[' + user + '] is offline\n')
+
+                                if spliter[0] != '/i' and spliter[0] != '/c' and spliter[0] != '/q':
+                                    string = '[' + str(self.keys[client_address]) + '] ' + data
+                                    print(GREEN + string)
+                                    self._send_data(sock, string)
+
+                        except socket.error:
+                            self._send_data(sock, '\n user[{0}] is offline\n'.format(self.keys[client_address]))
+                            print(RED + '\n user[{0}] is offline\n'.format(self.keys[client_address]))
+                            sock.close()
+                            self.users.remove(sock)
+                            continue
+
+        self._stop()
+
+    def main(self):
+        """
+        main function that run the server with the set up
+        :return:
+        """
+        self._bind()
+        self._run()
+
+if __name__ == '__main__':
+    server = Server()
+    thread = Thread(target=server.main())
+    thread.start()
+    thread.join()
